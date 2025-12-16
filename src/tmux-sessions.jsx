@@ -125,61 +125,127 @@ function SessionRow({ session, isSelected }) {
   );
 }
 
+// New session row
+function NewSessionRow({ isSelected }) {
+  const prefix = isSelected ? "> " : "  ";
+  const color = isSelected ? "cyan" : "green";
+
+  return (
+    <Text color={color}>
+      {prefix}
+      <Text bold={isSelected}>+ new session</Text>
+    </Text>
+  );
+}
+
 // Main app with keyboard navigation
 function App() {
   const [sessions, setSessions] = useState(getTmuxSessions);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [summaryCache, setSummaryCache] = useState({});
   const { exit } = useApp();
 
+  // Total items = sessions + 1 for "new session"
+  const totalItems = sessions.length + 1;
+  const newSessionIndex = sessions.length;
+
   useEffect(() => {
-    // Fetch summaries for claude sessions in parallel
+    // Fetch summaries for claude sessions in parallel, using cache
     sessions.forEach((session, idx) => {
-      if (session.command === "claude") {
+      if (session.command === "claude" && !summaryCache[session.name]) {
         getClaudeSummary(session.name).then((summary) => {
+          setSummaryCache((prev) => ({ ...prev, [session.name]: summary }));
           setSessions((prev) => {
             const updated = [...prev];
             updated[idx] = { ...updated[idx], summary, loadingSummary: false };
             return updated;
           });
         });
+      } else if (summaryCache[session.name]) {
+        // Use cached summary
+        setSessions((prev) => {
+          const updated = [...prev];
+          if (updated[idx].loadingSummary) {
+            updated[idx] = {
+              ...updated[idx],
+              summary: summaryCache[session.name],
+              loadingSummary: false,
+            };
+          }
+          return updated;
+        });
       }
     });
-  }, []);
+  }, [sessions.length]);
+
+  const killSession = (sessionName) => {
+    try {
+      execSync(`tmux kill-session -t "${sessionName}" 2>/dev/null`);
+      // Refresh sessions list
+      const newSessions = getTmuxSessions();
+      setSessions(newSessions);
+      // Adjust selection if needed
+      if (selectedIndex >= newSessions.length) {
+        setSelectedIndex(Math.max(0, newSessions.length));
+      }
+    } catch {}
+  };
+
+  const createNewSession = () => {
+    exit();
+    setTimeout(() => {
+      try {
+        execSync("tmux new-session", { stdio: "inherit" });
+      } catch {
+        process.exit(1);
+      }
+    }, 50);
+  };
+
+  const attachToSession = (sessionName) => {
+    exit();
+    setTimeout(() => {
+      try {
+        execSync(`tmux attach-session -t "${sessionName}"`, {
+          stdio: "inherit",
+        });
+      } catch {
+        process.exit(1);
+      }
+    }, 50);
+  };
 
   useInput((input, key) => {
     if (key.upArrow || input === "k") {
       setSelectedIndex((prev) => Math.max(0, prev - 1));
     } else if (key.downArrow || input === "j") {
-      setSelectedIndex((prev) => Math.min(sessions.length - 1, prev + 1));
+      setSelectedIndex((prev) => Math.min(totalItems - 1, prev + 1));
     } else if (key.return) {
-      // Attach to selected session
-      const session = sessions[selectedIndex];
-      if (session) {
-        exit();
-        // Use setTimeout to let ink cleanup before exec
-        setTimeout(() => {
-          try {
-            execSync(`tmux attach-session -t "${session.name}"`, {
-              stdio: "inherit",
-            });
-          } catch {
-            process.exit(1);
-          }
-        }, 50);
+      if (selectedIndex === newSessionIndex) {
+        createNewSession();
+      } else {
+        const session = sessions[selectedIndex];
+        if (session) {
+          attachToSession(session.name);
+        }
+      }
+    } else if (input === "x" || input === "d") {
+      // Kill selected session (not "new session" row)
+      if (selectedIndex < sessions.length) {
+        const session = sessions[selectedIndex];
+        if (session && !session.attached) {
+          killSession(session.name);
+        }
       }
     } else if (input === "q" || key.escape) {
       exit();
     }
   });
 
-  if (sessions.length === 0) {
-    return <Text>No tmux sessions found</Text>;
-  }
-
   return (
     <Box flexDirection="column">
       <Text dimColor>
-        j/k or arrows to navigate, enter to attach, q to quit
+        j/k: navigate | enter: attach | x: kill session | q: quit
       </Text>
       <Text> </Text>
       {sessions.map((session, idx) => (
@@ -187,13 +253,17 @@ function App() {
           <SessionRow session={session} isSelected={idx === selectedIndex} />
         </Box>
       ))}
+      <Box marginBottom={1}>
+        <NewSessionRow isSelected={selectedIndex === newSessionIndex} />
+      </Box>
     </Box>
   );
 }
 
 // Handle direct session name argument
-const sessionArg = process.argv[2];
-if (sessionArg) {
+const args = process.argv.slice(2);
+if (args.length > 0) {
+  const sessionArg = args[0];
   try {
     execSync(`tmux attach-session -t "${sessionArg}"`, { stdio: "inherit" });
   } catch {
