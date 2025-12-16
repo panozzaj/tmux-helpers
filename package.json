@@ -1,0 +1,22 @@
+{
+  "name": "tmux-helpers",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "tls": "./dist/tls.js"
+  },
+  "scripts": {
+    "build": "esbuild src/tls.jsx --bundle --platform=node --format=esm --outfile=dist/tls.js --external:react --external:ink && echo '#!/usr/bin/env node' | cat - dist/tls.js > dist/tmp.js && mv dist/tmp.js dist/tls.js && chmod +x dist/tls.js",
+    "postinstall": "npm run build"
+  },
+  "dependencies": {
+    "ink": "^6.5.1",
+    "react": "^19"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
