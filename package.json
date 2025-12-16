@@ -3,10 +3,13 @@
   "version": "1.0.0",
   "type": "module",
   "bin": {
-    "tls": "./dist/tls.js"
+    "tmux-list-sessions": "./dist/tmux-list-sessions.js",
+    "tmux-attach-session": "./dist/tmux-attach-session.js"
   },
   "scripts": {
-    "build": "esbuild src/tls.jsx --bundle --platform=node --format=esm --outfile=dist/tls.js --external:react --external:ink && echo '#!/usr/bin/env node' | cat - dist/tls.js > dist/tmp.js && mv dist/tmp.js dist/tls.js && chmod +x dist/tls.js",
+    "build": "npm run build:list && npm run build:attach",
+    "build:list": "esbuild src/tmux-list-sessions.jsx --bundle --platform=node --format=esm --outfile=dist/tmux-list-sessions.js --external:react --external:ink && echo '#!/usr/bin/env node' | cat - dist/tmux-list-sessions.js > dist/tmp.js && mv dist/tmp.js dist/tmux-list-sessions.js && chmod +x dist/tmux-list-sessions.js",
+    "build:attach": "esbuild src/tmux-attach-session.jsx --bundle --platform=node --format=esm --outfile=dist/tmux-attach-session.js --external:react --external:ink && echo '#!/usr/bin/env node' | cat - dist/tmux-attach-session.js > dist/tmp.js && mv dist/tmp.js dist/tmux-attach-session.js && chmod +x dist/tmux-attach-session.js",
     "postinstall": "npm run build"
   },
   "dependencies": {
