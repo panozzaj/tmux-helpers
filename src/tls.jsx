@@ -72,7 +72,7 @@ async function getClaudeSummary(sessionName) {
         "llm",
         [
           "-m",
-          "haiku",
+          "claude-3-haiku",
           'Summarize what this Claude Code session is working on in 10 words or less. Just output the summary, nothing else. If unclear, say "unclear"',
         ],
         {
