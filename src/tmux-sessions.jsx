@@ -143,6 +143,7 @@ function App() {
   const [sessions, setSessions] = useState(getTmuxSessions);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [summaryCache, setSummaryCache] = useState({});
+  const [confirmingKill, setConfirmingKill] = useState(null);
   const { exit } = useApp();
 
   // Total items = sessions + 1 for "new session"
@@ -216,6 +217,17 @@ function App() {
   };
 
   useInput((input, key) => {
+    // Handle confirmation prompt
+    if (confirmingKill) {
+      if (input === "y" || input === "Y") {
+        killSession(confirmingKill);
+        setConfirmingKill(null);
+      } else {
+        setConfirmingKill(null);
+      }
+      return;
+    }
+
     if (key.upArrow || input === "k") {
       setSelectedIndex((prev) => Math.max(0, prev - 1));
     } else if (key.downArrow || input === "j") {
@@ -234,7 +246,7 @@ function App() {
       if (selectedIndex < sessions.length) {
         const session = sessions[selectedIndex];
         if (session && !session.attached) {
-          killSession(session.name);
+          setConfirmingKill(session.name);
         }
       }
     } else if (input === "q" || key.escape) {
@@ -256,6 +268,11 @@ function App() {
       <Box marginBottom={1}>
         <NewSessionRow isSelected={selectedIndex === newSessionIndex} />
       </Box>
+      {confirmingKill && (
+        <Box marginTop={1}>
+          <Text color="red">Kill session "{confirmingKill}"? (y/n)</Text>
+        </Box>
+      )}
     </Box>
   );
 }
