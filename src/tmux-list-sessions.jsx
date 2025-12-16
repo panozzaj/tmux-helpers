@@ -108,17 +108,13 @@ function Session({ session }) {
 
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Text bold>
-        {session.name}
-        {attachedStr}
-      </Text>
       <Text>
-        {" "}
-        {session.windows} {windowWord} | {session.age} old | {session.command}
+        <Text bold>{session.name}</Text>
+        {attachedStr} | {session.windows} {windowWord} | {session.age} old |{" "}
+        <Text color="blue">{session.path}</Text> | {session.command}
       </Text>
-      <Text> {session.path}</Text>
       {session.loadingSummary && !session.summary && (
-        <Text color="gray"> summarizing...</Text>
+        <Text color="gray"> → summarizing...</Text>
       )}
       {session.summary && <Text color="cyan"> → {session.summary}</Text>}
     </Box>

@@ -110,27 +110,17 @@ function SessionRow({ session, isSelected }) {
 
   return (
     <Box flexDirection="column">
-      <Text color={color} bold={isSelected}>
+      <Text color={color}>
         {prefix}
-        {session.name}
-        {attachedStr}
-      </Text>
-      <Text color={color}>
-        {"    "}
-        {session.windows} {windowWord} | {session.age} old | {session.command}
-      </Text>
-      <Text color={color}>
-        {"    "}
-        {session.path}
+        <Text bold={isSelected}>{session.name}</Text>
+        {attachedStr} | {session.windows} {windowWord} | {session.age} old |{" "}
+        <Text color={isSelected ? "cyan" : "blue"}>{session.path}</Text> |{" "}
+        {session.command}
       </Text>
       {session.loadingSummary && !session.summary && (
-        <Text color="gray">{"    "}summarizing...</Text>
+        <Text color="gray"> → summarizing...</Text>
       )}
-      {session.summary && (
-        <Text color="yellow">
-          {"    "}→ {session.summary}
-        </Text>
-      )}
+      {session.summary && <Text color="yellow"> → {session.summary}</Text>}
     </Box>
   );
 }
