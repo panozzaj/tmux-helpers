@@ -57,6 +57,9 @@ function getTmuxSessions() {
   }
 }
 
+// Track spawned processes for cleanup
+const spawnedProcesses = [];
+
 // Get visible pane content and summarize with LLM
 async function getClaudeSummary(sessionName) {
   try {
@@ -77,8 +80,11 @@ async function getClaudeSummary(sessionName) {
         ],
         {
           stdio: ["pipe", "pipe", "pipe"],
+          detached: false,
         },
       );
+
+      spawnedProcesses.push(llm);
 
       let output = "";
       llm.stdout.on("data", (data) => {
@@ -99,6 +105,15 @@ async function getClaudeSummary(sessionName) {
   } catch {
     return null;
   }
+}
+
+// Cleanup function
+function cleanup() {
+  spawnedProcesses.forEach((p) => {
+    try {
+      p.kill();
+    } catch {}
+  });
 }
 
 // Session row component
@@ -251,7 +266,9 @@ function App() {
         }
       }
     } else if (input === "q" || key.escape) {
+      cleanup();
       exit();
+      process.exit(0);
     }
   });
 
