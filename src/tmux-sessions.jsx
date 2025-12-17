@@ -121,16 +121,14 @@ function SessionRow({ session, isSelected }) {
   const attachedStr = session.attached ? " (attached)" : "";
   const windowWord = session.windows === 1 ? "window" : "windows";
   const prefix = isSelected ? "> " : "  ";
-  const color = isSelected ? "cyan" : undefined;
 
   return (
     <Box flexDirection="column">
-      <Text color={color}>
+      <Text>
         {prefix}
         <Text bold={isSelected}>{session.name}</Text>
         {attachedStr} | {session.windows} {windowWord} | {session.age} old |{" "}
-        <Text color={isSelected ? "cyan" : "blue"}>{session.path}</Text> |{" "}
-        {session.command}
+        <Text color="blue">{session.path}</Text> | {session.command}
       </Text>
       {session.loadingSummary && !session.summary && (
         <Text color="gray"> → summarizing...</Text>
