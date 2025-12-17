@@ -222,9 +222,10 @@ function App() {
       if (input === "y" || input === "Y") {
         killSession(confirmingKill);
         setConfirmingKill(null);
-      } else {
+      } else if (input === "n" || input === "N" || key.escape) {
         setConfirmingKill(null);
       }
+      // Ignore other keys while confirming
       return;
     }
 
@@ -245,7 +246,7 @@ function App() {
       // Kill selected session (not "new session" row)
       if (selectedIndex < sessions.length) {
         const session = sessions[selectedIndex];
-        if (session && !session.attached) {
+        if (session) {
           setConfirmingKill(session.name);
         }
       }
