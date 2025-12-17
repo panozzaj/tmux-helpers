@@ -243,9 +243,9 @@ function App() {
     }
 
     if (key.upArrow || input === "k") {
-      setSelectedIndex((prev) => Math.max(0, prev - 1));
+      setSelectedIndex((prev) => (prev === 0 ? totalItems - 1 : prev - 1));
     } else if (key.downArrow || input === "j") {
-      setSelectedIndex((prev) => Math.min(totalItems - 1, prev + 1));
+      setSelectedIndex((prev) => (prev === totalItems - 1 ? 0 : prev + 1));
     } else if (key.return) {
       if (selectedIndex === newSessionIndex) {
         createNewSession();
