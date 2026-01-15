@@ -206,6 +206,7 @@ function App() {
   };
 
   const createNewSession = () => {
+    cleanup();
     exit();
     setTimeout(() => {
       try {
@@ -217,6 +218,7 @@ function App() {
   };
 
   const attachToSession = (sessionName) => {
+    cleanup();
     exit();
     setTimeout(() => {
       try {
@@ -257,11 +259,12 @@ function App() {
       }
     } else if (input === "x" || input === "d") {
       // Kill selected session (not "new session" row)
-      if (selectedIndex < sessions.length) {
-        const session = sessions[selectedIndex];
-        if (session) {
-          setConfirmingKill(session.name);
-        }
+      if (selectedIndex === newSessionIndex) {
+        return; // Can't kill "new session" row
+      }
+      const session = sessions[selectedIndex];
+      if (session) {
+        setConfirmingKill(session.name);
       }
     } else if (input === "q" || key.escape) {
       cleanup();
@@ -301,6 +304,19 @@ if (args.length > 0) {
     execSync(`tmux attach-session -t "${sessionArg}"`, { stdio: "inherit" });
   } catch {
     process.exit(1);
+  }
+} else if (process.env.TMUX) {
+  // Already inside tmux - can't attach to nested sessions, just list them
+  const sessions = getTmuxSessions();
+  if (sessions.length === 0) {
+    console.log("No tmux sessions found.");
+  } else {
+    console.log("Inside tmux - listing sessions (can't attach from here):\n");
+    sessions.forEach((s) => {
+      const attachedStr = s.attached ? " (attached)" : "";
+      const windowWord = s.windows === 1 ? "window" : "windows";
+      console.log(`  ${s.name}${attachedStr} | ${s.windows} ${windowWord} | ${s.age} old | ${s.path} | ${s.command}`);
+    });
   }
 } else {
   render(<App />);
