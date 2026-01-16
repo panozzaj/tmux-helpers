@@ -134,6 +134,37 @@ function getTmuxSessions() {
 
     if (!sessionData) return [];
 
+    // Get all panes at once (avoids issues with numeric session name targeting)
+    const allPanesData = execSync(
+      `tmux list-panes -a -F '#{session_name}|#{window_index}|#{pane_current_path}|#{pane_current_command}|#{pane_id}' 2>/dev/null`,
+      { encoding: "utf-8" },
+    ).trim();
+
+    // Group panes by session name
+    const panesBySession = {};
+    if (allPanesData) {
+      for (const paneLine of allPanesData.split("\n")) {
+        const [sessionName, windowIndex, rawPath, cmd, paneId] = paneLine.split("|");
+        if (!panesBySession[sessionName]) {
+          panesBySession[sessionName] = [];
+        }
+        const formattedPath = getFormattedPath(rawPath);
+        const isClaudeCode = cmd === "node" || /^\d+\.\d+\.\d+$/.test(cmd);
+        panesBySession[sessionName].push({
+          index: panesBySession[sessionName].length,
+          windowIndex: parseInt(windowIndex),
+          path: formattedPath,
+          rawPath,
+          command: isClaudeCode ? "claude" : cmd,
+          isClaudeCode,
+          paneId,
+          summary: null,
+          loadingSummary: isClaudeCode,
+          paneContent: null,
+        });
+      }
+    }
+
     const now = Math.floor(Date.now() / 1000);
     const sessions = [];
 
@@ -150,41 +181,11 @@ function getTmuxSessions() {
       else if (hours > 0) age = `${hours}h ${mins}m`;
       else age = `${mins}m`;
 
-      // Get panes for this session using list-panes -s
-      let panes = [];
-      try {
-        const paneData = execSync(
-          `tmux list-panes -s -t "${name}" -F '#{window_index}|#{pane_current_path}|#{pane_current_command}|#{pane_id}' 2>/dev/null`,
-          { encoding: "utf-8" },
-        ).trim();
-
-        // Show all panes
-        let paneIndex = 0;
-        for (const paneLine of paneData.split("\n")) {
-          const [windowIndex, rawPath, cmd, paneId] = paneLine.split("|");
-          const formattedPath = getFormattedPath(rawPath);
-          const isClaudeCode = cmd === "node" || /^\d+\.\d+\.\d+$/.test(cmd);
-          panes.push({
-            index: paneIndex,
-            windowIndex: parseInt(windowIndex),
-            path: formattedPath,
-            rawPath,
-            command: isClaudeCode ? "claude" : cmd,
-            isClaudeCode,
-            paneId,
-            summary: null,
-            loadingSummary: isClaudeCode,
-            paneContent: null,
-          });
-          paneIndex++;
-        }
-      } catch {}
-
       sessions.push({
         name,
         attached: parseInt(attached) > 0,
         age,
-        panes,
+        panes: panesBySession[name] || [],
       });
     }
 
@@ -351,8 +352,11 @@ function buildRowList(sessions) {
   const rows = [];
   for (const session of sessions) {
     rows.push({ type: "session", session });
-    for (const pane of session.panes) {
-      rows.push({ type: "pane", session, pane });
+    // Only add individual pane rows if there's more than one pane
+    if (session.panes.length > 1) {
+      for (const pane of session.panes) {
+        rows.push({ type: "pane", session, pane });
+      }
     }
   }
   rows.push({ type: "new" });
@@ -487,7 +491,12 @@ function App() {
       if (row.type === "new") {
         createNewSession();
       } else if (row.type === "session") {
-        attachToSession(row.session.name);
+        // If single pane, attach to it directly
+        if (row.session.panes.length === 1) {
+          attachToSession(row.session.name, row.session.panes[0]);
+        } else {
+          attachToSession(row.session.name);
+        }
       } else if (row.type === "pane") {
         attachToSession(row.session.name, row.pane);
       }
@@ -516,19 +525,34 @@ function App() {
         const sessionRowIndex = currentRowIndex;
         currentRowIndex++;
 
-        const paneComponents = session.panes.map((pane) => {
-          const paneRowIndex = currentRowIndex;
-          currentRowIndex++;
-          return (
+        // Only render pane rows as selectable if there's more than one pane
+        let paneComponents;
+        if (session.panes.length > 1) {
+          paneComponents = session.panes.map((pane) => {
+            const paneRowIndex = currentRowIndex;
+            currentRowIndex++;
+            return (
+              <PaneRow
+                key={`pane-${session.name}-${pane.paneId}`}
+                pane={pane}
+                isSelected={selectedIndex === paneRowIndex}
+                claudeColorIndex={claudeColorIndex}
+                multiLine={multiLine}
+              />
+            );
+          });
+        } else if (session.panes.length === 1) {
+          // Show single pane info but not selectable
+          paneComponents = (
             <PaneRow
-              key={`pane-${session.name}-${pane.paneId}`}
-              pane={pane}
-              isSelected={selectedIndex === paneRowIndex}
+              key={`pane-${session.name}-${session.panes[0].paneId}`}
+              pane={session.panes[0]}
+              isSelected={false}
               claudeColorIndex={claudeColorIndex}
               multiLine={multiLine}
             />
           );
-        });
+        }
 
         return (
           <Box key={session.name} flexDirection="column" marginBottom={1}>
