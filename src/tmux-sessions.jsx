@@ -6,7 +6,7 @@ import { render, Text, Box, useInput, useApp } from "ink";
 function getTmuxSessions() {
   try {
     const data = execSync(
-      `tmux list-sessions -F '#{session_name}|#{session_windows}|#{session_attached}|#{session_created}|#{pane_current_command}' 2>/dev/null`,
+      `tmux list-sessions -F '#{session_name}|#{session_windows}|#{session_attached}|#{session_created}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null`,
       { encoding: "utf-8" },
     ).trim();
 
@@ -15,17 +15,10 @@ function getTmuxSessions() {
     const now = Math.floor(Date.now() / 1000);
 
     return data.split("\n").map((line) => {
-      const [name, windows, attached, created, cmd] = line.split("|");
+      const [name, windows, attached, created, cmd, rawPath] = line.split("|");
 
-      // Get pane path
-      let path = "";
-      try {
-        path = execSync(
-          `tmux display-message -t "${name}" -p '#{pane_current_path}' 2>/dev/null`,
-          { encoding: "utf-8" },
-        ).trim();
-        path = path.replace(process.env.HOME, "~");
-      } catch {}
+      // Format path
+      const path = rawPath ? rawPath.replace(process.env.HOME, "~") : "";
 
       // Format age
       const ageSecs = now - parseInt(created);
@@ -63,8 +56,10 @@ const spawnedProcesses = [];
 // Get visible pane content and summarize with LLM
 async function getClaudeSummary(sessionName) {
   try {
+    // Use explicit window target (session:0) to avoid tmux returning wrong pane
+    // when targeting just the session name
     const paneContent = execSync(
-      `tmux capture-pane -t "${sessionName}" -p 2>/dev/null | tail -50`,
+      `tmux capture-pane -t "${sessionName}:0" -p 2>/dev/null | tail -50`,
       { encoding: "utf-8" },
     ).trim();
 
