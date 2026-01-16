@@ -6,9 +6,7 @@ import { join } from "path";
 import React, { useState, useEffect } from "react";
 import { render, Text, Box, useInput, useApp } from "ink";
 
-// Config paths
-const CONFIG_DIR = join(homedir(), ".config", "tmux-sessions");
-const CONFIG_FILE = join(CONFIG_DIR, "config.json");
+// Cache directory for LLM summaries
 const CACHE_DIR = join(homedir(), ".cache", "tmux-sessions");
 
 // Claude brand colors for animation
@@ -19,50 +17,73 @@ const LLM_PROMPT =
   'Summarize what this Claude Code session is working on in 10 words or less. Just output the summary, nothing else. If unclear, say "unclear"';
 const LLM_MODEL = "claude-3-haiku";
 
-// Load config file with path aliases
-function loadConfig() {
-  const defaultConfig = {
-    pathAliases: {
-      "$tries": "~/Documents/dev/tries",
-      "$dev": "~/Documents/dev",
-    },
-  };
-
-  try {
-    if (!existsSync(CONFIG_DIR)) {
-      mkdirSync(CONFIG_DIR, { recursive: true });
+// Check if colorpath is available
+let colorpathAvailable = null;
+function checkColorpath() {
+  if (colorpathAvailable === null) {
+    try {
+      execSync("which colorpath", { stdio: "pipe" });
+      colorpathAvailable = true;
+    } catch {
+      colorpathAvailable = false;
     }
-    if (!existsSync(CONFIG_FILE)) {
-      writeFileSync(CONFIG_FILE, JSON.stringify(defaultConfig, null, 2));
-      return defaultConfig;
-    }
-    return JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
-  } catch {
-    return defaultConfig;
   }
+  return colorpathAvailable;
 }
 
-// Apply path aliases (longest match first)
-function applyPathAliases(path, aliases) {
-  if (!path) return "";
+// Parse ANSI-colored output from colorpath into segments
+// Returns array of { text, color } objects
+function parseColorpathOutput(output) {
+  const segments = [];
+  // ANSI color map
+  const colorMap = {
+    "36": "cyan",     // alias
+    "34": "blue",     // intermediate
+    "35": "magenta",  // final
+  };
 
-  // Expand ~ in path first
-  const expandedPath = path.replace(/^~/, homedir());
+  // Match ANSI sequences and text between them
+  const regex = /\x1b\[(\d+)m([^\x1b]*)/g;
+  let match;
+  let currentColor = null;
 
-  // Sort aliases by value length descending (longest match first)
-  const sortedAliases = Object.entries(aliases).sort(
-    ([, a], [, b]) => b.replace("~", homedir()).length - a.replace("~", homedir()).length,
-  );
+  while ((match = regex.exec(output)) !== null) {
+    const code = match[1];
+    const text = match[2];
 
-  for (const [alias, fullPath] of sortedAliases) {
-    const expandedFullPath = fullPath.replace("~", homedir());
-    if (expandedPath.startsWith(expandedFullPath)) {
-      return alias + expandedPath.slice(expandedFullPath.length);
+    if (code === "0") {
+      currentColor = null;
+    } else if (colorMap[code]) {
+      currentColor = colorMap[code];
+    }
+
+    if (text) {
+      segments.push({ text, color: currentColor });
     }
   }
 
-  // Fall back to ~-based path
-  return path.replace(homedir(), "~");
+  return segments;
+}
+
+// Get formatted path using colorpath, returns { segments, raw }
+function getFormattedPath(rawPath) {
+  if (!rawPath) return { segments: [], raw: "" };
+
+  if (checkColorpath()) {
+    try {
+      const output = execSync(`colorpath "${rawPath}"`, {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      const segments = parseColorpathOutput(output);
+      if (segments.length > 0) {
+        return { segments, raw: null };
+      }
+    } catch {}
+  }
+
+  // Fallback: return raw path with no coloring
+  return { segments: [], raw: rawPath };
 }
 
 // Ensure cache directory exists
@@ -102,8 +123,8 @@ function saveSummaryToCache(paneContent, summary) {
   } catch {}
 }
 
-// Get tmux session data with windows
-function getTmuxSessions(config) {
+// Get tmux session data with panes
+function getTmuxSessions() {
   try {
     // Get all sessions
     const sessionData = execSync(
@@ -141,12 +162,13 @@ function getTmuxSessions(config) {
         let paneIndex = 0;
         for (const paneLine of paneData.split("\n")) {
           const [windowIndex, rawPath, cmd, paneId] = paneLine.split("|");
-          const path = applyPathAliases(rawPath, config.pathAliases);
+          const formattedPath = getFormattedPath(rawPath);
           const isClaudeCode = cmd === "node" || /^\d+\.\d+\.\d+$/.test(cmd);
           panes.push({
             index: paneIndex,
             windowIndex: parseInt(windowIndex),
-            path,
+            path: formattedPath,
+            rawPath,
             command: isClaudeCode ? "claude" : cmd,
             isClaudeCode,
             paneId,
@@ -257,24 +279,17 @@ function SessionHeader({ session, isSelected }) {
   );
 }
 
-// Format path with colors: alias (cyan), slashes (white), dirs (magenta)
-function formatPath(path) {
-  const parts = [];
-  const aliasMatch = path.match(/^(\$[a-zA-Z]+)(.*)/);
-
-  if (aliasMatch) {
-    parts.push(<Text key="alias" color="cyan">{aliasMatch[1]}</Text>);
-    path = aliasMatch[2];
+// Render path with colors from colorpath segments or fallback to plain
+function formatPath(pathObj) {
+  if (pathObj.raw !== null) {
+    // Fallback: plain path with no coloring
+    return <Text>{pathObj.raw}</Text>;
   }
 
-  // Split remaining path by slashes, filter empty segments
-  const segments = path.split("/").filter(Boolean);
-  segments.forEach((seg, i) => {
-    parts.push(<Text key={`slash-${i}`}>/</Text>);
-    parts.push(<Text key={`seg-${i}`} color="magenta">{seg}</Text>);
-  });
-
-  return parts;
+  // Render colorpath segments
+  return pathObj.segments.map((seg, i) => (
+    <Text key={i} color={seg.color}>{seg.text}</Text>
+  ));
 }
 
 // Pane row component
@@ -350,7 +365,10 @@ function shouldUseMultiLine(sessions, termWidth) {
     for (const pane of session.panes) {
       if (!pane.isClaudeCode) continue;
       // Estimate line length: "    0 " (6) + path + " * → " (5) + summary
-      const pathLen = pane.path.length;
+      // Use rawPath length or sum of segment text lengths
+      const pathLen = pane.path.raw !== null
+        ? pane.path.raw.length
+        : pane.path.segments.reduce((sum, s) => sum + s.text.length, 0);
       const summaryLen = pane.summary ? pane.summary.length : 14; // "Summarizing..."
       const lineLen = 6 + pathLen + 5 + summaryLen;
       if (lineLen > termWidth) return true;
@@ -361,8 +379,7 @@ function shouldUseMultiLine(sessions, termWidth) {
 
 // Main app with keyboard navigation
 function App() {
-  const config = loadConfig();
-  const [sessions, setSessions] = useState(() => getTmuxSessions(config));
+  const [sessions, setSessions] = useState(() => getTmuxSessions());
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [confirmingKill, setConfirmingKill] = useState(null);
   const [claudeColorIndex, setClaudeColorIndex] = useState(0);
@@ -405,7 +422,7 @@ function App() {
   const killSession = (sessionName) => {
     try {
       execSync(`tmux kill-session -t "${sessionName}" 2>/dev/null`);
-      const newSessions = getTmuxSessions(config);
+      const newSessions = getTmuxSessions();
       setSessions(newSessions);
       const newRows = buildRowList(newSessions);
       if (selectedIndex >= newRows.length) {
@@ -546,8 +563,7 @@ if (args.length > 0) {
   }
 } else if (process.env.TMUX) {
   // Already inside tmux - can't attach to nested sessions, just list them
-  const config = loadConfig();
-  const sessions = getTmuxSessions(config);
+  const sessions = getTmuxSessions();
   if (sessions.length === 0) {
     console.log("No tmux sessions found.");
   } else {
@@ -557,7 +573,8 @@ if (args.length > 0) {
       console.log(`  ${s.name} started ${s.age} ago${attachedStr}`);
       s.panes.forEach((p) => {
         const claudeMark = p.isClaudeCode ? " *" : "";
-        console.log(`    ${p.index} ${p.path}${claudeMark}`);
+        // Use rawPath for plain text output
+        console.log(`    ${p.index} ${p.rawPath}${claudeMark}`);
       });
     });
   }
