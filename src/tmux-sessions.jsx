@@ -1,24 +1,123 @@
 import { execSync, spawn } from "child_process";
+import { createHash } from "crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 import React, { useState, useEffect } from "react";
 import { render, Text, Box, useInput, useApp } from "ink";
 
-// Get tmux session data
-function getTmuxSessions() {
+// Config paths
+const CONFIG_DIR = join(homedir(), ".config", "tmux-sessions");
+const CONFIG_FILE = join(CONFIG_DIR, "config.json");
+const CACHE_DIR = join(homedir(), ".cache", "tmux-sessions");
+
+// Claude brand colors for animation
+const CLAUDE_COLORS = ["#D97706", "#DC8A4F", "#E9A178"];
+
+// LLM prompt and model for cache key generation
+const LLM_PROMPT =
+  'Summarize what this Claude Code session is working on in 10 words or less. Just output the summary, nothing else. If unclear, say "unclear"';
+const LLM_MODEL = "claude-3-haiku";
+
+// Load config file with path aliases
+function loadConfig() {
+  const defaultConfig = {
+    pathAliases: {
+      "$tries": "~/Documents/dev/tries",
+      "$dev": "~/Documents/dev",
+    },
+  };
+
   try {
-    const data = execSync(
-      `tmux list-sessions -F '#{session_name}|#{session_windows}|#{session_attached}|#{session_created}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null`,
+    if (!existsSync(CONFIG_DIR)) {
+      mkdirSync(CONFIG_DIR, { recursive: true });
+    }
+    if (!existsSync(CONFIG_FILE)) {
+      writeFileSync(CONFIG_FILE, JSON.stringify(defaultConfig, null, 2));
+      return defaultConfig;
+    }
+    return JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+  } catch {
+    return defaultConfig;
+  }
+}
+
+// Apply path aliases (longest match first)
+function applyPathAliases(path, aliases) {
+  if (!path) return "";
+
+  // Expand ~ in path first
+  const expandedPath = path.replace(/^~/, homedir());
+
+  // Sort aliases by value length descending (longest match first)
+  const sortedAliases = Object.entries(aliases).sort(
+    ([, a], [, b]) => b.replace("~", homedir()).length - a.replace("~", homedir()).length,
+  );
+
+  for (const [alias, fullPath] of sortedAliases) {
+    const expandedFullPath = fullPath.replace("~", homedir());
+    if (expandedPath.startsWith(expandedFullPath)) {
+      return alias + expandedPath.slice(expandedFullPath.length);
+    }
+  }
+
+  // Fall back to ~-based path
+  return path.replace(homedir(), "~");
+}
+
+// Ensure cache directory exists
+function ensureCacheDir() {
+  if (!existsSync(CACHE_DIR)) {
+    mkdirSync(CACHE_DIR, { recursive: true });
+  }
+}
+
+// Generate cache key from pane content
+function getCacheKey(paneContent) {
+  const hash = createHash("md5");
+  hash.update(paneContent + LLM_PROMPT + LLM_MODEL);
+  return hash.digest("hex");
+}
+
+// Get cached summary
+function getCachedSummary(paneContent) {
+  try {
+    ensureCacheDir();
+    const cacheKey = getCacheKey(paneContent);
+    const cacheFile = join(CACHE_DIR, `${cacheKey}.txt`);
+    if (existsSync(cacheFile)) {
+      return readFileSync(cacheFile, "utf-8").trim();
+    }
+  } catch {}
+  return null;
+}
+
+// Save summary to cache
+function saveSummaryToCache(paneContent, summary) {
+  try {
+    ensureCacheDir();
+    const cacheKey = getCacheKey(paneContent);
+    const cacheFile = join(CACHE_DIR, `${cacheKey}.txt`);
+    writeFileSync(cacheFile, summary);
+  } catch {}
+}
+
+// Get tmux session data with windows
+function getTmuxSessions(config) {
+  try {
+    // Get all sessions
+    const sessionData = execSync(
+      `tmux list-sessions -F '#{session_name}|#{session_attached}|#{session_created}' 2>/dev/null`,
       { encoding: "utf-8" },
     ).trim();
 
-    if (!data) return [];
+    if (!sessionData) return [];
 
     const now = Math.floor(Date.now() / 1000);
+    const sessions = [];
 
-    return data.split("\n").map((line) => {
-      const [name, windows, attached, created, cmd, rawPath] = line.split("|");
-
-      // Format path
-      const path = rawPath ? rawPath.replace(process.env.HOME, "~") : "";
+    for (const line of sessionData.split("\n")) {
+      const [name, attached, created] = line.split("|");
 
       // Format age
       const ageSecs = now - parseInt(created);
@@ -30,21 +129,44 @@ function getTmuxSessions() {
       else if (hours > 0) age = `${hours}h ${mins}m`;
       else age = `${mins}m`;
 
-      // Normalize command - detect Claude Code (shows as node or version like 2.0.61)
-      const isClaudeCode = cmd === "node" || /^\d+\.\d+\.\d+$/.test(cmd);
-      const command = isClaudeCode ? "claude" : cmd;
+      // Get panes for this session using list-panes -s
+      let panes = [];
+      try {
+        const paneData = execSync(
+          `tmux list-panes -s -t "${name}" -F '#{window_index}|#{pane_current_path}|#{pane_current_command}|#{pane_id}' 2>/dev/null`,
+          { encoding: "utf-8" },
+        ).trim();
 
-      return {
+        // Show all panes
+        let paneIndex = 0;
+        for (const paneLine of paneData.split("\n")) {
+          const [windowIndex, rawPath, cmd, paneId] = paneLine.split("|");
+          const path = applyPathAliases(rawPath, config.pathAliases);
+          const isClaudeCode = cmd === "node" || /^\d+\.\d+\.\d+$/.test(cmd);
+          panes.push({
+            index: paneIndex,
+            windowIndex: parseInt(windowIndex),
+            path,
+            command: isClaudeCode ? "claude" : cmd,
+            isClaudeCode,
+            paneId,
+            summary: null,
+            loadingSummary: isClaudeCode,
+            paneContent: null,
+          });
+          paneIndex++;
+        }
+      } catch {}
+
+      sessions.push({
         name,
-        windows: parseInt(windows),
-        attached: attached === "1",
+        attached: parseInt(attached) > 0,
         age,
-        command,
-        path,
-        summary: null,
-        loadingSummary: command === "claude",
-      };
-    });
+        panes,
+      });
+    }
+
+    return sessions;
   } catch {
     return [];
   }
@@ -53,31 +175,35 @@ function getTmuxSessions() {
 // Track spawned processes for cleanup
 const spawnedProcesses = [];
 
-// Get visible pane content and summarize with LLM
-async function getClaudeSummary(sessionName) {
+// Get visible pane content
+function getPaneContent(paneId) {
   try {
-    // Use explicit window target (session:0) to avoid tmux returning wrong pane
-    // when targeting just the session name
-    const paneContent = execSync(
-      `tmux capture-pane -t "${sessionName}:0" -p 2>/dev/null | tail -50`,
+    return execSync(
+      `tmux capture-pane -t "${paneId}" -p 2>/dev/null | tail -50`,
       { encoding: "utf-8" },
     ).trim();
+  } catch {
+    return null;
+  }
+}
 
-    if (!paneContent) return null;
+// Get summary with LLM (checks cache first)
+async function getClaudeSummary(paneId) {
+  try {
+    const paneContent = getPaneContent(paneId);
+    if (!paneContent) return { summary: null, paneContent: null };
+
+    // Check cache first
+    const cached = getCachedSummary(paneContent);
+    if (cached) {
+      return { summary: cached, paneContent };
+    }
 
     return new Promise((resolve) => {
-      const llm = spawn(
-        "llm",
-        [
-          "-m",
-          "claude-3-haiku",
-          'Summarize what this Claude Code session is working on in 10 words or less. Just output the summary, nothing else. If unclear, say "unclear"',
-        ],
-        {
-          stdio: ["pipe", "pipe", "pipe"],
-          detached: false,
-        },
-      );
+      const llm = spawn("llm", ["-m", LLM_MODEL, LLM_PROMPT], {
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: false,
+      });
 
       spawnedProcesses.push(llm);
 
@@ -85,8 +211,14 @@ async function getClaudeSummary(sessionName) {
       llm.stdout.on("data", (data) => {
         output += data.toString();
       });
-      llm.on("close", () => resolve(output.trim() || null));
-      llm.on("error", () => resolve(null));
+      llm.on("close", () => {
+        const summary = output.trim() || null;
+        if (summary && paneContent) {
+          saveSummaryToCache(paneContent, summary);
+        }
+        resolve({ summary, paneContent });
+      });
+      llm.on("error", () => resolve({ summary: null, paneContent }));
 
       llm.stdin.write(paneContent);
       llm.stdin.end();
@@ -94,11 +226,11 @@ async function getClaudeSummary(sessionName) {
       // Timeout after 10s
       setTimeout(() => {
         llm.kill();
-        resolve(null);
+        resolve({ summary: null, paneContent });
       }, 10000);
     });
   } catch {
-    return null;
+    return { summary: null, paneContent: null };
   }
 }
 
@@ -111,24 +243,77 @@ function cleanup() {
   });
 }
 
-// Session row component
-function SessionRow({ session, isSelected }) {
-  const attachedStr = session.attached ? " (attached)" : "";
-  const windowWord = session.windows === 1 ? "window" : "windows";
+// Session header component
+function SessionHeader({ session, isSelected }) {
   const prefix = isSelected ? "> " : "  ";
+
+  return (
+    <Text>
+      {prefix}
+      <Text bold={isSelected}>{session.name}</Text>
+      <Text dimColor> started {session.age} ago</Text>
+      {session.attached && <Text dimColor> (attached)</Text>}
+    </Text>
+  );
+}
+
+// Format path with colors: alias (cyan), slashes (white), dirs (magenta)
+function formatPath(path) {
+  const parts = [];
+  const aliasMatch = path.match(/^(\$[a-zA-Z]+)(.*)/);
+
+  if (aliasMatch) {
+    parts.push(<Text key="alias" color="cyan">{aliasMatch[1]}</Text>);
+    path = aliasMatch[2];
+  }
+
+  // Split remaining path by slashes, filter empty segments
+  const segments = path.split("/").filter(Boolean);
+  segments.forEach((seg, i) => {
+    parts.push(<Text key={`slash-${i}`}>/</Text>);
+    parts.push(<Text key={`seg-${i}`} color="magenta">{seg}</Text>);
+  });
+
+  return parts;
+}
+
+// Pane row component
+function PaneRow({ pane, isSelected, claudeColorIndex, multiLine }) {
+  const prefix = isSelected ? ">   " : "    ";
+  // Only animate color while loading, otherwise use first color
+  const claudeColor = pane.loadingSummary ? CLAUDE_COLORS[claudeColorIndex] : CLAUDE_COLORS[0];
+
+  const summaryPart = pane.isClaudeCode && (
+    <>
+      <Text color={claudeColor}> *</Text>
+      {pane.loadingSummary && !pane.summary && (
+        <Text> → <Text color="gray">Summarizing...</Text></Text>
+      )}
+      {pane.summary && <Text> → <Text color="#CCCC66">{pane.summary}</Text></Text>}
+    </>
+  );
+
+  if (multiLine && pane.isClaudeCode) {
+    return (
+      <Box flexDirection="column">
+        <Text>
+          {prefix}
+          <Text bold={isSelected}>{pane.index}</Text>{" "}
+          {formatPath(pane.path)}
+        </Text>
+        <Text>      {summaryPart}</Text>
+      </Box>
+    );
+  }
 
   return (
     <Box flexDirection="column">
       <Text>
         {prefix}
-        <Text bold={isSelected}>{session.name}</Text>
-        {attachedStr} | {session.windows} {windowWord} | {session.age} old |{" "}
-        <Text color="blue">{session.path}</Text> | {session.command}
+        <Text bold={isSelected}>{pane.index}</Text>{" "}
+        {formatPath(pane.path)}
+        {summaryPart}
       </Text>
-      {session.loadingSummary && !session.summary && (
-        <Text color="gray"> → summarizing...</Text>
-      )}
-      {session.summary && <Text color="yellow"> → {session.summary}</Text>}
     </Box>
   );
 }
@@ -146,56 +331,85 @@ function NewSessionRow({ isSelected }) {
   );
 }
 
+// Build flat list of navigable rows
+function buildRowList(sessions) {
+  const rows = [];
+  for (const session of sessions) {
+    rows.push({ type: "session", session });
+    for (const pane of session.panes) {
+      rows.push({ type: "pane", session, pane });
+    }
+  }
+  rows.push({ type: "new" });
+  return rows;
+}
+
+// Calculate if any pane line would exceed terminal width
+function shouldUseMultiLine(sessions, termWidth) {
+  for (const session of sessions) {
+    for (const pane of session.panes) {
+      if (!pane.isClaudeCode) continue;
+      // Estimate line length: "    0 " (6) + path + " * → " (5) + summary
+      const pathLen = pane.path.length;
+      const summaryLen = pane.summary ? pane.summary.length : 14; // "Summarizing..."
+      const lineLen = 6 + pathLen + 5 + summaryLen;
+      if (lineLen > termWidth) return true;
+    }
+  }
+  return false;
+}
+
 // Main app with keyboard navigation
 function App() {
-  const [sessions, setSessions] = useState(getTmuxSessions);
+  const config = loadConfig();
+  const [sessions, setSessions] = useState(() => getTmuxSessions(config));
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [summaryCache, setSummaryCache] = useState({});
   const [confirmingKill, setConfirmingKill] = useState(null);
+  const [claudeColorIndex, setClaudeColorIndex] = useState(0);
   const { exit } = useApp();
 
-  // Total items = sessions + 1 for "new session"
-  const totalItems = sessions.length + 1;
-  const newSessionIndex = sessions.length;
+  // Build navigable row list
+  const rows = buildRowList(sessions);
+  const termWidth = process.stdout.columns || 80;
+  const multiLine = shouldUseMultiLine(sessions, termWidth);
+  const totalItems = rows.length;
 
+  // Animate Claude indicator color
   useEffect(() => {
-    // Fetch summaries for claude sessions in parallel, using cache
-    sessions.forEach((session, idx) => {
-      if (session.command === "claude" && !summaryCache[session.name]) {
-        getClaudeSummary(session.name).then((summary) => {
-          setSummaryCache((prev) => ({ ...prev, [session.name]: summary }));
-          setSessions((prev) => {
-            const updated = [...prev];
-            updated[idx] = { ...updated[idx], summary, loadingSummary: false };
-            return updated;
+    const interval = setInterval(() => {
+      setClaudeColorIndex((prev) => (prev + 1) % CLAUDE_COLORS.length);
+    }, 400);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Fetch summaries for Claude panes
+  useEffect(() => {
+    sessions.forEach((session, sessionIdx) => {
+      session.panes.forEach((pane, paneIdx) => {
+        if (pane.isClaudeCode && pane.loadingSummary && !pane.summary) {
+          getClaudeSummary(pane.paneId).then(({ summary }) => {
+            setSessions((prev) => {
+              const updated = JSON.parse(JSON.stringify(prev));
+              if (updated[sessionIdx] && updated[sessionIdx].panes[paneIdx]) {
+                updated[sessionIdx].panes[paneIdx].summary = summary;
+                updated[sessionIdx].panes[paneIdx].loadingSummary = false;
+              }
+              return updated;
+            });
           });
-        });
-      } else if (summaryCache[session.name]) {
-        // Use cached summary
-        setSessions((prev) => {
-          const updated = [...prev];
-          if (updated[idx].loadingSummary) {
-            updated[idx] = {
-              ...updated[idx],
-              summary: summaryCache[session.name],
-              loadingSummary: false,
-            };
-          }
-          return updated;
-        });
-      }
+        }
+      });
     });
   }, [sessions.length]);
 
   const killSession = (sessionName) => {
     try {
       execSync(`tmux kill-session -t "${sessionName}" 2>/dev/null`);
-      // Refresh sessions list
-      const newSessions = getTmuxSessions();
+      const newSessions = getTmuxSessions(config);
       setSessions(newSessions);
-      // Adjust selection if needed
-      if (selectedIndex >= newSessions.length) {
-        setSelectedIndex(Math.max(0, newSessions.length));
+      const newRows = buildRowList(newSessions);
+      if (selectedIndex >= newRows.length) {
+        setSelectedIndex(Math.max(0, newRows.length - 1));
       }
     } catch {}
   };
@@ -212,11 +426,20 @@ function App() {
     }, 50);
   };
 
-  const attachToSession = (sessionName) => {
+  const attachToSession = (sessionName, pane = null) => {
     cleanup();
     exit();
     setTimeout(() => {
       try {
+        // Select window and pane BEFORE attaching (attach blocks until detach)
+        if (pane !== null) {
+          execSync(`tmux select-window -t "${sessionName}:${pane.windowIndex}"`, {
+            stdio: "pipe",
+          });
+          execSync(`tmux select-pane -t "${pane.paneId}"`, {
+            stdio: "pipe",
+          });
+        }
         execSync(`tmux attach-session -t "${sessionName}"`, {
           stdio: "inherit",
         });
@@ -235,7 +458,6 @@ function App() {
       } else if (input === "n" || input === "N" || key.escape) {
         setConfirmingKill(null);
       }
-      // Ignore other keys while confirming
       return;
     }
 
@@ -244,22 +466,18 @@ function App() {
     } else if (key.downArrow || input === "j") {
       setSelectedIndex((prev) => (prev === totalItems - 1 ? 0 : prev + 1));
     } else if (key.return) {
-      if (selectedIndex === newSessionIndex) {
+      const row = rows[selectedIndex];
+      if (row.type === "new") {
         createNewSession();
-      } else {
-        const session = sessions[selectedIndex];
-        if (session) {
-          attachToSession(session.name);
-        }
+      } else if (row.type === "session") {
+        attachToSession(row.session.name);
+      } else if (row.type === "pane") {
+        attachToSession(row.session.name, row.pane);
       }
     } else if (input === "x" || input === "d") {
-      // Kill selected session (not "new session" row)
-      if (selectedIndex === newSessionIndex) {
-        return; // Can't kill "new session" row
-      }
-      const session = sessions[selectedIndex];
-      if (session) {
-        setConfirmingKill(session.name);
+      const row = rows[selectedIndex];
+      if (row.type === "session" || row.type === "pane") {
+        setConfirmingKill(row.session.name);
       }
     } else if (input === "q" || key.escape) {
       cleanup();
@@ -268,19 +486,45 @@ function App() {
     }
   });
 
+  // Track which sessions are being rendered to know where to place selected marker
+  let currentRowIndex = 0;
+
   return (
     <Box flexDirection="column">
       <Text dimColor>
         j/k: navigate | enter: attach | x: kill session | q: quit
       </Text>
       <Text> </Text>
-      {sessions.map((session, idx) => (
-        <Box key={session.name} marginBottom={1}>
-          <SessionRow session={session} isSelected={idx === selectedIndex} />
-        </Box>
-      ))}
+      {sessions.map((session) => {
+        const sessionRowIndex = currentRowIndex;
+        currentRowIndex++;
+
+        const paneComponents = session.panes.map((pane) => {
+          const paneRowIndex = currentRowIndex;
+          currentRowIndex++;
+          return (
+            <PaneRow
+              key={`pane-${session.name}-${pane.paneId}`}
+              pane={pane}
+              isSelected={selectedIndex === paneRowIndex}
+              claudeColorIndex={claudeColorIndex}
+              multiLine={multiLine}
+            />
+          );
+        });
+
+        return (
+          <Box key={session.name} flexDirection="column" marginBottom={1}>
+            <SessionHeader
+              session={session}
+              isSelected={selectedIndex === sessionRowIndex}
+            />
+            {paneComponents}
+          </Box>
+        );
+      })}
       <Box marginBottom={1}>
-        <NewSessionRow isSelected={selectedIndex === newSessionIndex} />
+        <NewSessionRow isSelected={selectedIndex === rows.length - 1} />
       </Box>
       {confirmingKill && (
         <Box marginTop={1}>
@@ -302,15 +546,19 @@ if (args.length > 0) {
   }
 } else if (process.env.TMUX) {
   // Already inside tmux - can't attach to nested sessions, just list them
-  const sessions = getTmuxSessions();
+  const config = loadConfig();
+  const sessions = getTmuxSessions(config);
   if (sessions.length === 0) {
     console.log("No tmux sessions found.");
   } else {
     console.log("Inside tmux - listing sessions (can't attach from here):\n");
     sessions.forEach((s) => {
       const attachedStr = s.attached ? " (attached)" : "";
-      const windowWord = s.windows === 1 ? "window" : "windows";
-      console.log(`  ${s.name}${attachedStr} | ${s.windows} ${windowWord} | ${s.age} old | ${s.path} | ${s.command}`);
+      console.log(`  ${s.name} started ${s.age} ago${attachedStr}`);
+      s.panes.forEach((p) => {
+        const claudeMark = p.isClaudeCode ? " *" : "";
+        console.log(`    ${p.index} ${p.path}${claudeMark}`);
+      });
     });
   }
 } else {
