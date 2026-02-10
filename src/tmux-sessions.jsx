@@ -500,6 +500,13 @@ function App() {
       } else if (row.type === "pane") {
         attachToSession(row.session.name, row.pane);
       }
+    } else if (input === "r" || (key.ctrl && input === "l")) {
+      const newSessions = getTmuxSessions();
+      setSessions(newSessions);
+      const newRows = buildRowList(newSessions);
+      if (selectedIndex >= newRows.length) {
+        setSelectedIndex(Math.max(0, newRows.length - 1));
+      }
     } else if (input === "x" || input === "d") {
       const row = rows[selectedIndex];
       if (row.type === "session" || row.type === "pane") {
@@ -518,7 +525,7 @@ function App() {
   return (
     <Box flexDirection="column">
       <Text dimColor>
-        j/k: navigate | enter: attach | x: kill session | q: quit
+        j/k: navigate | enter: attach | r: refresh | x: kill session | q: quit
       </Text>
       <Text> </Text>
       {sessions.map((session) => {
