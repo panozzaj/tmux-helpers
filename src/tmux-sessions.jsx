@@ -1,4 +1,4 @@
-import { execSync, spawn } from "child_process";
+import { execFileSync, spawn } from "child_process";
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
@@ -22,7 +22,7 @@ let colorpathAvailable = null;
 function checkColorpath() {
   if (colorpathAvailable === null) {
     try {
-      execSync("which colorpath", { stdio: "pipe" });
+      execFileSync("which", ["colorpath"], { stdio: "pipe" });
       colorpathAvailable = true;
     } catch {
       colorpathAvailable = false;
@@ -71,7 +71,7 @@ function getFormattedPath(rawPath) {
 
   if (checkColorpath()) {
     try {
-      const output = execSync(`colorpath "${rawPath}"`, {
+      const output = execFileSync("colorpath", [rawPath], {
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
       }).trim();
@@ -127,17 +127,19 @@ function saveSummaryToCache(paneContent, summary) {
 function getTmuxSessions() {
   try {
     // Get all sessions
-    const sessionData = execSync(
-      `tmux list-sessions -F '#{session_name}|#{session_attached}|#{session_created}' 2>/dev/null`,
-      { encoding: "utf-8" },
+    const sessionData = execFileSync(
+      "tmux",
+      ["list-sessions", "-F", "#{session_name}|#{session_attached}|#{session_created}"],
+      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     ).trim();
 
     if (!sessionData) return [];
 
     // Get all panes at once (avoids issues with numeric session name targeting)
-    const allPanesData = execSync(
-      `tmux list-panes -a -F '#{session_name}|#{window_index}|#{pane_current_path}|#{pane_current_command}|#{pane_id}' 2>/dev/null`,
-      { encoding: "utf-8" },
+    const allPanesData = execFileSync(
+      "tmux",
+      ["list-panes", "-a", "-F", "#{session_name}|#{window_index}|#{pane_current_path}|#{pane_current_command}|#{pane_id}"],
+      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     ).trim();
 
     // Group panes by session name
@@ -201,10 +203,14 @@ const spawnedProcesses = [];
 // Get visible pane content
 function getPaneContent(paneId) {
   try {
-    return execSync(
-      `tmux capture-pane -t "${paneId}" -p 2>/dev/null | tail -50`,
-      { encoding: "utf-8" },
+    const output = execFileSync(
+      "tmux",
+      ["capture-pane", "-t", paneId, "-p"],
+      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     ).trim();
+    // Take last 50 lines
+    const lines = output.split("\n");
+    return lines.slice(-50).join("\n");
   } catch {
     return null;
   }
@@ -425,7 +431,9 @@ function App() {
 
   const killSession = (sessionName) => {
     try {
-      execSync(`tmux kill-session -t "${sessionName}" 2>/dev/null`);
+      execFileSync("tmux", ["kill-session", "-t", sessionName], {
+        stdio: ["pipe", "pipe", "pipe"],
+      });
       const newSessions = getTmuxSessions();
       setSessions(newSessions);
       const newRows = buildRowList(newSessions);
@@ -440,7 +448,7 @@ function App() {
     exit();
     setTimeout(() => {
       try {
-        execSync("tmux new-session", { stdio: "inherit" });
+        execFileSync("tmux", ["new-session"], { stdio: "inherit" });
       } catch {
         process.exit(1);
       }
@@ -454,14 +462,14 @@ function App() {
       try {
         // Select window and pane BEFORE attaching (attach blocks until detach)
         if (pane !== null) {
-          execSync(`tmux select-window -t "${sessionName}:${pane.windowIndex}"`, {
+          execFileSync("tmux", ["select-window", "-t", `${sessionName}:${pane.windowIndex}`], {
             stdio: "pipe",
           });
-          execSync(`tmux select-pane -t "${pane.paneId}"`, {
+          execFileSync("tmux", ["select-pane", "-t", pane.paneId], {
             stdio: "pipe",
           });
         }
-        execSync(`tmux attach-session -t "${sessionName}"`, {
+        execFileSync("tmux", ["attach-session", "-t", sessionName], {
           stdio: "inherit",
         });
       } catch {
@@ -588,7 +596,7 @@ const args = process.argv.slice(2);
 if (args.length > 0) {
   const sessionArg = args[0];
   try {
-    execSync(`tmux attach-session -t "${sessionArg}"`, { stdio: "inherit" });
+    execFileSync("tmux", ["attach-session", "-t", sessionArg], { stdio: "inherit" });
   } catch {
     process.exit(1);
   }
